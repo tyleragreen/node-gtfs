@@ -9,6 +9,8 @@ var request = require('request');
 var rimraf = require('rimraf');
 var unzip = require('unzip2');
 var argv = require('yargs').argv;
+var memwatch = require('memwatch-next');
+var heapdump = require('heapdump');
 
 var filenames = require('../lib/filenames');
 
@@ -16,6 +18,24 @@ var q;
 var config = {};
 // check if this file was invoked direct through command line or required as an export
 var invocation = (require.main === module) ? 'direct' : 'required';
+
+setInterval(function() {
+  memwatch.gc();
+}, 1000);
+
+/*setInterval(function() {
+  heapdump.writeSnapshot(function(err, filename) {
+    console.log('dump written to', filename);
+  });
+}, 1000);*/
+
+memwatch.on('stats', function(d) {
+  console.log("postgc:", d.current_base);
+});
+
+memwatch.on('leak', function(d) {
+  console.log("LEAK:", d);
+});
 
 if (invocation === 'direct') {
   try {
@@ -34,6 +54,69 @@ if (invocation === 'direct') {
   }
 }
 
+//convert fields that should be int
+var integerFields = [
+  'monday',
+  'tuesday',
+  'wednesday',
+  'thursday',
+  'friday',
+  'saturday',
+  'sunday',
+  'start_date',
+  'end_date',
+  'date',
+  'exception_type',
+  'shape_pt_sequence',
+  'payment_method',
+  'transfers',
+  'transfer_duration',
+  'feed_start_date',
+  'feed_end_date',
+  'headway_secs',
+  'exact_times',
+  'route_type',
+  'direction_id',
+  'location_type',
+  'wheelchair_boarding',
+  'stop_sequence',
+  'pickup_type',
+  'drop_off_type',
+  'use_stop_sequence',
+  'transfer_type',
+  'min_transfer_time',
+  'wheelchair_accessible',
+  'bikes_allowed',
+  'timepoint'
+];
+
+//convert fields that should be float
+var floatFields = [
+  'price',
+  'shape_dist_traveled',
+  'shape_pt_lat',
+  'shape_pt_lon',
+  'stop_lat',
+  'stop_lon'
+];
+
+var print_err = function(e) {
+  if (e) {
+    handleError(e);
+  }
+}; 
+
+var handleInt = function(fieldName) {
+  if (this[fieldName]) {
+    this[fieldName] = parseInt(this[fieldName], 10);
+  }
+};
+
+var handleFloat = function(fieldName) {
+  if (this[fieldName]) {
+    this[fieldName] = parseFloat(this[fieldName]);
+  }
+};
 
 function main(config, callback) {
   var log = (config.verbose === false) ? function() {} : console.log;
@@ -71,7 +154,6 @@ function main(config, callback) {
       callback();
     };
 
-
     function downloadGTFS(task, cb) {
       var downloadDir = 'downloads';
       var gtfsDir = 'downloads';
@@ -95,7 +177,6 @@ function main(config, callback) {
         cb();
       });
 
-
       function cleanupFiles(cb) {
         // remove old downloaded file
         rimraf(downloadDir, function(e) {
@@ -107,7 +188,6 @@ function main(config, callback) {
         });
       }
 
-
       function getFiles(cb) {
         if (task.agency_url) {
           downloadFiles(cb);
@@ -115,7 +195,6 @@ function main(config, callback) {
           readFiles(cb);
         }
       }
-
 
       function downloadFiles(cb) {
         // do download
@@ -157,7 +236,6 @@ function main(config, callback) {
         }
       }
 
-
       function readFiles(cb) {
         if (path.extname(task.path) === '.zip') {
           // local file is zipped
@@ -172,7 +250,6 @@ function main(config, callback) {
           cb();
         }
       }
-
 
       function removeDatabase(cb) {
         // remove old db records based on agency_key
@@ -193,58 +270,11 @@ function main(config, callback) {
         });
       }
 
-
       function importFiles(cb) {
-        //convert fields that should be int
-        var integerFields = [
-          'monday',
-          'tuesday',
-          'wednesday',
-          'thursday',
-          'friday',
-          'saturday',
-          'sunday',
-          'start_date',
-          'end_date',
-          'date',
-          'exception_type',
-          'shape_pt_sequence',
-          'payment_method',
-          'transfers',
-          'transfer_duration',
-          'feed_start_date',
-          'feed_end_date',
-          'headway_secs',
-          'exact_times',
-          'route_type',
-          'direction_id',
-          'location_type',
-          'wheelchair_boarding',
-          'stop_sequence',
-          'pickup_type',
-          'drop_off_type',
-          'use_stop_sequence',
-          'transfer_type',
-          'min_transfer_time',
-          'wheelchair_accessible',
-          'bikes_allowed',
-          'timepoint'
-        ];
-        
-        //convert fields that should be float
-        var floatFields = [
-          'price',
-          'shape_dist_traveled',
-          'shape_pt_lat',
-          'shape_pt_lon',
-          'stop_lat',
-          'stop_lon'
-        ];
-          
+
         // Loop through each file and add agency_key
         async.forEachSeries(filenames, function(filename, cb) {
           var filepath = path.join(gtfsDir, filename.fileNameBase + '.txt');
-          
           fs.access(filepath, fs.R_OK | fs.W_OK, function(err){
             if (err) {
               log(agency_key + ': Importing data - No ' + filename.fileNameBase + '.txt file found');
@@ -260,8 +290,12 @@ function main(config, callback) {
                   relax: true
                 });
                 
+                var lines = [];
+                
                 parser.on('readable', function() {
                   while(line = parser.read()) {
+                    //var hd = new memwatch.HeapDiff();
+                    
                     //remove null values
                     for(var key in line) {
                       if (line[key] === null) {
@@ -272,17 +306,8 @@ function main(config, callback) {
                     //add agency_key
                     line.agency_key = agency_key;
       
-                    integerFields.forEach(function(fieldName) {
-                      if (line[fieldName]) {
-                        line[fieldName] = parseInt(line[fieldName], 10);
-                      }
-                    });
-      
-                    floatFields.forEach(function(fieldName) {
-                      if (line[fieldName]) {
-                        line[fieldName] = parseFloat(line[fieldName]);
-                      }
-                    });
+                    integerFields.forEach(handleInt, line);
+                    floatFields.forEach(handleFloat, line);
       
                     // make lat/lon array for stops
                     if (line.stop_lat && line.stop_lon) {
@@ -326,16 +351,31 @@ function main(config, callback) {
                       line.loc = [line.shape_pt_lon, line.shape_pt_lat];
                     }
       
-                    //insert into db
-                    collection.insert(line, function(e) {
-                      if (e) {
-                        handleError(e);
-                      }
-                    });
+                    lines.push(line);
+                    /*if (lines.length > 10000) {
+                      collection.insert(lines, {safe:true},function(err, objects) {
+                        console.log('done');
+                        if (err) console.warn(err.message);
+                        if (err && err.message.indexOf('E11000 ') !== -1) {
+                          // this _id was already inserted in the database
+                        }
+                      });
+                      lines = [];
+                      //memwatch.gc();
+                    };*/
+                    
+                    //var hde = hd.end();
+                    //console.log(JSON.stringify(hde, null, 2));
                   }
                 });
+                
                 parser.on('end', function() {
                   log(agency_key + ': Finished importing ' + filename.fileNameBase + '.txt');
+                  //insert into db
+                  if (lines.length > 0) {
+                    collection.insert(lines, print_err);
+                  };
+                  lines = [];
                   cb();
                 })
                 parser.on('error', handleError);
@@ -343,6 +383,7 @@ function main(config, callback) {
               });
             }
           });
+          
         }, function(e) {
           cb(e, 'import');
         });
